@@ -1,0 +1,10 @@
+flask
+opencv-python
+numpy
+piexif
+Pillow
+torch
+torchvision
+deepface
+werkzeug
+gunicorn
