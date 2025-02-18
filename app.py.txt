@@ -1,0 +1,124 @@
+from flask import Flask, request, jsonify
+import cv2
+import numpy as np
+import piexif
+from PIL import Image, ImageChops, ImageEnhance
+import torch
+import torchvision.transforms as transforms
+import base64
+import deepface
+import io
+import os
+import tempfile
+from werkzeug.utils import secure_filename
+import logging
+
+app = Flask(__name__)
+
+# Configuration des logs
+logging.basicConfig(level=logging.INFO)
+
+# 📌 Extraction des métadonnées EXIF
+def extract_metadata(image_path):
+    try:
+        exif_data = piexif.load(image_path)
+        return exif_data
+    except Exception as e:
+        return str(e)
+
+# 📌 Détection des modifications via ELA
+def error_level_analysis(image_path):
+    try:
+        img = Image.open(image_path).convert('RGB')
+        temp_path = os.path.join(tempfile.gettempdir(), "temp_ela.jpg")
+        img.save(temp_path, 'JPEG', quality=90)
+        ela_img = ImageChops.difference(img, Image.open(temp_path))
+        os.remove(temp_path)
+        return np.array(ela_img).tolist()
+    except Exception as e:
+        return str(e)
+
+# 📌 Chargement du modèle IA (avec gestion d'erreur)
+MODEL_PATH = "model_ia_detection.pth"
+model = None
+if os.path.exists(MODEL_PATH):
+    try:
+        model = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
+        model.eval()
+    except Exception as e:
+        logging.error(f"Erreur chargement modèle IA: {e}")
+
+# 📌 Détection d’image générée par IA
+def detect_ai_generated(image_path):
+    if model is None:
+        return "Modèle IA non chargé"
+    
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    
+    image = Image.open(image_path).convert("RGB")
+    image = transform(image).unsqueeze(0)
+
+    with torch.no_grad():
+        output = model(image)
+    
+    prediction = torch.sigmoid(output).item()
+    return "Image IA" if prediction > 0.5 else "Authentique"
+
+# 📌 Détection des modifications via les contours
+def detect_modifications(image_path):
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 100, 200)
+    mod_score = np.sum(edges) / (img.shape[0] * img.shape[1])
+    return "Modifiée" if mod_score > 0.05 else "Authentique"
+
+# 📌 Détection DeepFake (désactivée pour tester Render)
+def detect_deepfake(image_path):
+    try:
+        result = deepface.DeepFace.analyze(img_path=image_path, actions=['emotion', 'age', 'gender'])
+        return "Visage humain"
+    except Exception:
+        return "Deepfake possible"
+
+# 📌 Route API principale : `/analyze`
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image uploaded'}), 400
+    file = request.files['image']
+    
+    # Vérification du format
+    if file.filename.split('.')[-1].lower() not in ['jpeg', 'jpg', 'png', 'bmp']:
+        return jsonify({'error': 'Unsupported image format'}), 400
+    
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(tempfile.gettempdir(), filename)
+    
+    try:
+        file.save(file_path)
+
+        metadata = extract_metadata(file_path)
+        ela_result = error_level_analysis(file_path)
+        ai_detection = detect_ai_generated(file_path)
+        modifications = detect_modifications(file_path)
+        deepfake_check = detect_deepfake(file_path)
+
+        return jsonify({
+            'metadata': metadata,
+            'ela_analysis': ela_result,
+            'ai_detection': ai_detection,
+            'modifications': modifications,
+            'deepfake_check': deepfake_check
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# Démarrer l'API Flask
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
