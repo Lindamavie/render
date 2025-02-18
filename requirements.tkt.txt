@@ -1,8 +1,0 @@
-flask
-opencv-python
-numpy
-pillow
-torch
-torchvision
-werkzeug
-gunicorn
